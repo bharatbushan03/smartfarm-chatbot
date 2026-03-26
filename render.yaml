@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: smartfarm-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: HF_REPO_ID
+        value: meta-llama/Llama-3.1-8B-Instruct:fastest
+      - key: HF_FALLBACK_MODELS
+        value: mistralai/Mistral-7B-Instruct-v0.3:fastest,deepseek-ai/DeepSeek-R1:fastest
+      - key: HF_TIMEOUT_SECONDS
+        value: "60"
+      - key: HF_MAX_NEW_TOKENS
+        value: "256"
+      - key: HUGGINGFACEHUB_API_TOKEN
+        sync: false
