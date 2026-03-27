@@ -1,10 +1,9 @@
 services:
   - type: web
     name: smartfarm-api
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: HF_REPO_ID
         value: meta-llama/Llama-3.1-8B-Instruct:fastest

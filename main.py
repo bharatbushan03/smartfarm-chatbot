@@ -1,13 +1,28 @@
 import os
 import requests
+import logging
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
 app = FastAPI(title="Agro Farming Chatbot")
+
+# Add CORS middleware to allow requests from any origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configuration
 HF_REPO_ID = os.getenv("HF_REPO_ID", "meta-llama/Llama-3.1-8B-Instruct:fastest")
@@ -46,7 +61,7 @@ def _extract_generated_text(result):
 def query_huggingface(question, model_id):
     """Calls Hugging Face router chat completions for a specific model."""
     if not HF_TOKEN:
-        print("HUGGINGFACEHUB_API_TOKEN is not configured.")
+        logger.error("HUGGINGFACEHUB_API_TOKEN is not configured.")
         return None
 
     headers = {"Content-Type": "application/json"}
@@ -73,11 +88,12 @@ def query_huggingface(question, model_id):
         if response.status_code == 200:
             text = _extract_generated_text(response.json())
             if text:
+                logger.info(f"Successfully queried model: {model_id}")
                 return text
         else:
-            print(f"HF router HTTP {response.status_code} ({model_id}): {response.text[:300]}")
+            logger.warning(f"HF router HTTP {response.status_code} ({model_id}): {response.text[:300]}")
     except Exception as e:
-        print(f"HF router error ({model_id}): {repr(e)}")
+        logger.error(f"HF router error ({model_id}): {repr(e)}")
 
     return None
 
@@ -90,7 +106,7 @@ async def chat(request: ChatRequest):
     response = None
 
     for model_id in models_to_try:
-        print(f"Querying Hugging Face model: {model_id}")
+        logger.info(f"Trying Hugging Face model: {model_id}")
         response = query_huggingface(request.message, model_id)
         if response:
             return {"response": response, "model": model_id}

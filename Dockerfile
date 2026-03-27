@@ -15,6 +15,6 @@ COPY main.py .
 # Render sets PORT dynamically at runtime.
 EXPOSE 10000
 
-# Run the application
-# Use PORT if provided (Render), otherwise default to 10000.
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
+# Run the application using gunicorn for production
+# Use 2 workers for free tier compatibility (512MB RAM)
+CMD ["sh", "-c", "gunicorn -w 2 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:${PORT:-10000}"]
