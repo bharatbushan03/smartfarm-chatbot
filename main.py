@@ -38,6 +38,11 @@ HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN", "").strip("'\" ")
 HF_TIMEOUT_SECONDS = int(os.getenv("HF_TIMEOUT_SECONDS", "60"))
 HF_MAX_NEW_TOKENS = int(os.getenv("HF_MAX_NEW_TOKENS", "256"))
 
+# In-memory storage for chat history: {session_id: [messages]}
+CHAT_HISTORY = {}
+# Maximum number of messages to keep in history per session
+MAX_HISTORY_LENGTH = 10
+
 
 def _clean_response_text(text):
     # Some models may return internal reasoning inside <think> tags.
@@ -58,8 +63,8 @@ def _extract_generated_text(result):
             return _clean_response_text((message.get("content") or ""))
     return ""
 
-def query_huggingface(question, model_id):
-    """Calls Hugging Face router chat completions for a specific model."""
+def query_huggingface(messages, model_id):
+    """Calls Hugging Face router chat completions with a full message history."""
     if not HF_TOKEN:
         logger.error("HUGGINGFACEHUB_API_TOKEN is not configured.")
         return None
@@ -69,16 +74,7 @@ def query_huggingface(question, model_id):
 
     payload = {
         "model": model_id,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a knowledgeable agro farming expert. Give practical, concise advice."
-            },
-            {
-                "role": "user",
-                "content": question
-            }
-        ],
+        "messages": messages,
         "max_tokens": HF_MAX_NEW_TOKENS
     }
 
@@ -99,22 +95,51 @@ def query_huggingface(question, model_id):
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str = "default"
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
+    session_id = request.session_id
+    
+    # Initialize history if new session
+    if session_id not in CHAT_HISTORY:
+        CHAT_HISTORY[session_id] = [
+            {
+                "role": "system",
+                "content": "You are a knowledgeable agro farming expert. Give practical, concise advice."
+            }
+        ]
+    
+    # Add user message to history
+    CHAT_HISTORY[session_id].append({"role": "user", "content": request.message})
+    
+    # Keep history within limits (excluding system message at index 0)
+    if len(CHAT_HISTORY[session_id]) > MAX_HISTORY_LENGTH + 1:
+        # Keep system message and slice the last N messages
+        CHAT_HISTORY[session_id] = [CHAT_HISTORY[session_id][0]] + CHAT_HISTORY[session_id][-(MAX_HISTORY_LENGTH):]
+
     models_to_try = [HF_REPO_ID] + [m for m in HF_FALLBACK_MODELS if m != HF_REPO_ID]
-    response = None
+    response_text = None
 
     for model_id in models_to_try:
-        logger.info(f"Trying Hugging Face model: {model_id}")
-        response = query_huggingface(request.message, model_id)
-        if response:
-            return {"response": response, "model": model_id}
+        logger.info(f"Trying Hugging Face model: {model_id} for session: {session_id}")
+        response_text = query_huggingface(CHAT_HISTORY[session_id], model_id)
+        if response_text:
+            # Add assistant response to history
+            CHAT_HISTORY[session_id].append({"role": "assistant", "content": response_text})
+            return {
+                "response": response_text, 
+                "model": model_id,
+                "session_id": session_id
+            }
     
-    if not response:
-        return {
-            "response": "I could not get a model response from Hugging Face. Try again later or change HF_REPO_ID/HF_FALLBACK_MODELS."
-        }
+    # If all models fail, remove the last user message to avoid an inconsistent state
+    CHAT_HISTORY[session_id].pop()
+    
+    return {
+        "response": "I could not get a model response from Hugging Face. Try again later.",
+        "session_id": session_id
+    }
 
 # Serve chatbot API only (no frontend)
 @app.get("/")
