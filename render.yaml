@@ -13,5 +13,9 @@ services:
         value: "60"
       - key: HF_MAX_NEW_TOKENS
         value: "256"
+      - key: MAX_IMAGE_SIZE_MB
+        value: "10"
       - key: HUGGINGFACEHUB_API_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false

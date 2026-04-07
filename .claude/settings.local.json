@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"exit: $?\")",
+      "Bash(curl -s http://127.0.0.1:8000/health)",
+      "Bash(python3 -m json.tool)",
+      "Bash(xargs -r kill)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(uvicorn main:app:*)",
+      "Bash(xargs kill:*)",
+      "WebSearch",
+      "Bash(python3 -c ':*)",
+      "Read(//tmp/**)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}
