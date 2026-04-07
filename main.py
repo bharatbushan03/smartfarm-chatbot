@@ -5,7 +5,7 @@ import logging
 import base64
 import io
 import json
-from typing import Optional
+from typing import Optional, Union
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -79,6 +79,346 @@ GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
 CHAT_HISTORY = {}
 # Maximum number of messages to keep in history per session
 MAX_HISTORY_LENGTH = 10
+
+
+JK_SEASON_DEFAULTS = {
+    "kharif": {
+        "temperature": 27.0,
+        "humidity": 72.0,
+        "soil_ph": 6.6,
+        "soil_moisture": 62.0,
+        "rainfall": 210.0,
+        "nitrogen": "high",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+    "rabi": {
+        "temperature": 14.0,
+        "humidity": 60.0,
+        "soil_ph": 6.8,
+        "soil_moisture": 46.0,
+        "rainfall": 85.0,
+        "nitrogen": "medium",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+    "zaid": {
+        "temperature": 29.0,
+        "humidity": 52.0,
+        "soil_ph": 6.7,
+        "soil_moisture": 42.0,
+        "rainfall": 55.0,
+        "nitrogen": "medium",
+        "phosphorus": "medium",
+        "potassium": "high",
+    },
+    "annual": {
+        "temperature": 22.0,
+        "humidity": 64.0,
+        "soil_ph": 6.7,
+        "soil_moisture": 50.0,
+        "rainfall": 120.0,
+        "nitrogen": "medium",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+}
+
+
+CROP_PROFILES = [
+    {
+        "crop": "Rice",
+        "temperature": (20.0, 35.0),
+        "humidity": (60.0, 90.0),
+        "soil_ph": (5.0, 7.0),
+        "soil_moisture": (60.0, 90.0),
+        "rainfall": (150.0, 350.0),
+        "nitrogen": "high",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+    {
+        "crop": "Maize",
+        "temperature": (18.0, 32.0),
+        "humidity": (50.0, 75.0),
+        "soil_ph": (5.8, 7.2),
+        "soil_moisture": (45.0, 70.0),
+        "rainfall": (80.0, 220.0),
+        "nitrogen": "high",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+    {
+        "crop": "Wheat",
+        "temperature": (10.0, 25.0),
+        "humidity": (40.0, 65.0),
+        "soil_ph": (6.0, 7.5),
+        "soil_moisture": (35.0, 55.0),
+        "rainfall": (40.0, 120.0),
+        "nitrogen": "medium",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+    {
+        "crop": "Barley",
+        "temperature": (8.0, 24.0),
+        "humidity": (35.0, 60.0),
+        "soil_ph": (6.0, 8.0),
+        "soil_moisture": (30.0, 50.0),
+        "rainfall": (30.0, 100.0),
+        "nitrogen": "medium",
+        "phosphorus": "low",
+        "potassium": "medium",
+    },
+    {
+        "crop": "Potato",
+        "temperature": (15.0, 25.0),
+        "humidity": (45.0, 70.0),
+        "soil_ph": (5.0, 6.8),
+        "soil_moisture": (50.0, 75.0),
+        "rainfall": (60.0, 180.0),
+        "nitrogen": "high",
+        "phosphorus": "high",
+        "potassium": "high",
+    },
+    {
+        "crop": "Mustard",
+        "temperature": (10.0, 28.0),
+        "humidity": (35.0, 60.0),
+        "soil_ph": (6.0, 7.8),
+        "soil_moisture": (30.0, 50.0),
+        "rainfall": (30.0, 110.0),
+        "nitrogen": "medium",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+    {
+        "crop": "Chickpea",
+        "temperature": (15.0, 30.0),
+        "humidity": (30.0, 55.0),
+        "soil_ph": (6.0, 8.0),
+        "soil_moisture": (25.0, 45.0),
+        "rainfall": (35.0, 95.0),
+        "nitrogen": "low",
+        "phosphorus": "medium",
+        "potassium": "medium",
+    },
+    {
+        "crop": "Apple",
+        "temperature": (7.0, 24.0),
+        "humidity": (45.0, 70.0),
+        "soil_ph": (5.8, 7.0),
+        "soil_moisture": (45.0, 65.0),
+        "rainfall": (80.0, 220.0),
+        "nitrogen": "medium",
+        "phosphorus": "medium",
+        "potassium": "high",
+    },
+]
+
+
+NPK_LEVELS = ["low", "medium", "high"]
+
+
+def _normalize_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    return cleaned if cleaned else None
+
+
+def _normalize_npk(value: Optional[Union[str, float, int]]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        aliases = {
+            "low": "low",
+            "l": "low",
+            "medium": "medium",
+            "med": "medium",
+            "m": "medium",
+            "high": "high",
+            "h": "high",
+        }
+        if lowered in aliases:
+            return aliases[lowered]
+        try:
+            numeric = float(lowered)
+        except ValueError:
+            return None
+    else:
+        numeric = float(value)
+
+    if numeric < 40:
+        return "low"
+    if numeric < 80:
+        return "medium"
+    return "high"
+
+
+def _score_numeric(value: float, lower: float, upper: float) -> float:
+    if lower <= value <= upper:
+        return 1.0
+
+    spread = max(upper - lower, 1.0)
+    if value < lower:
+        distance = lower - value
+    else:
+        distance = value - upper
+
+    penalty = distance / spread
+    return max(0.0, 1.0 - penalty)
+
+
+def _score_npk(actual: Optional[str], expected: str) -> float:
+    if actual is None:
+        return 0.4
+    if actual == expected:
+        return 1.0
+
+    ai = NPK_LEVELS.index(actual)
+    ei = NPK_LEVELS.index(expected)
+    diff = abs(ai - ei)
+    if diff == 1:
+        return 0.65
+    return 0.3
+
+
+def _season_key(season: Optional[str]) -> str:
+    normalized = _normalize_text(season)
+    if not normalized:
+        return "annual"
+
+    if "kharif" in normalized:
+        return "kharif"
+    if "rabi" in normalized:
+        return "rabi"
+    if "zaid" in normalized or "summer" in normalized:
+        return "zaid"
+    return "annual"
+
+
+def _derive_conditions(payload: "CropRecommendationRequest") -> tuple[dict, list[str], list[str]]:
+    warnings = []
+    suggestions = []
+
+    season_key = _season_key(payload.season)
+    defaults = JK_SEASON_DEFAULTS[season_key]
+
+    location = payload.location or "Jammu and Kashmir, India"
+    if not payload.location:
+        warnings.append("Location missing: used Jammu and Kashmir, India seasonal baseline.")
+
+    source_missing = []
+    conditions = {
+        "temperature": payload.temperature,
+        "humidity": payload.humidity,
+        "soil_ph": payload.soil_ph,
+        "soil_moisture": payload.soil_moisture,
+        "rainfall": payload.rainfall,
+        "nitrogen": _normalize_npk(payload.nitrogen),
+        "phosphorus": _normalize_npk(payload.phosphorus),
+        "potassium": _normalize_npk(payload.potassium),
+        "location": location,
+        "season": payload.season or season_key,
+    }
+
+    for key in ["temperature", "humidity", "soil_ph", "soil_moisture", "rainfall"]:
+        if conditions[key] is None:
+            conditions[key] = defaults[key]
+            source_missing.append(key)
+
+    for key in ["nitrogen", "phosphorus", "potassium"]:
+        if conditions[key] is None:
+            conditions[key] = defaults[key]
+            source_missing.append(key)
+
+    if source_missing:
+        warnings.append(
+            "Missing sensor fields used seasonal defaults for Jammu and Kashmir: "
+            + ", ".join(source_missing)
+            + "."
+        )
+
+    if not (5.0 <= conditions["soil_ph"] <= 7.8):
+        suggestions.append("Adjust soil pH toward 6.0-7.0 using lime (for acidic) or gypsum/sulfur strategy (for alkaline).")
+    if conditions["soil_moisture"] < 30:
+        suggestions.append("Increase irrigation frequency and add mulching to improve soil moisture retention.")
+    if conditions["soil_moisture"] > 80:
+        suggestions.append("Improve field drainage to prevent root stress and waterlogging.")
+
+    return conditions, warnings, suggestions
+
+
+def _rank_crops(conditions: dict) -> list[dict]:
+    ranked = []
+    for profile in CROP_PROFILES:
+        matched_conditions = []
+
+        t_score = _score_numeric(conditions["temperature"], *profile["temperature"])
+        if t_score >= 0.95:
+            matched_conditions.append("temperature in optimal range")
+
+        h_score = _score_numeric(conditions["humidity"], *profile["humidity"])
+        if h_score >= 0.95:
+            matched_conditions.append("humidity in suitable range")
+
+        ph_score = _score_numeric(conditions["soil_ph"], *profile["soil_ph"])
+        if ph_score >= 0.95:
+            matched_conditions.append("optimal pH range")
+
+        sm_score = _score_numeric(conditions["soil_moisture"], *profile["soil_moisture"])
+        if sm_score >= 0.95:
+            matched_conditions.append("soil moisture aligned")
+
+        rf_score = _score_numeric(conditions["rainfall"], *profile["rainfall"])
+        if rf_score >= 0.95:
+            matched_conditions.append("rainfall suitability")
+
+        n_score = _score_npk(conditions["nitrogen"], profile["nitrogen"])
+        if n_score >= 0.95:
+            matched_conditions.append("nitrogen requirement matched")
+
+        p_score = _score_npk(conditions["phosphorus"], profile["phosphorus"])
+        if p_score >= 0.95:
+            matched_conditions.append("phosphorus requirement matched")
+
+        k_score = _score_npk(conditions["potassium"], profile["potassium"])
+        if k_score >= 0.95:
+            matched_conditions.append("potassium requirement matched")
+
+        weighted = (
+            t_score * 12.5
+            + h_score * 10.0
+            + ph_score * 12.5
+            + sm_score * 12.5
+            + rf_score * 12.5
+            + n_score * 13.33
+            + p_score * 13.33
+            + k_score * 13.34
+        )
+        suitability_score = int(round(weighted))
+
+        if not matched_conditions:
+            matched_conditions = ["partial climate and soil alignment"]
+
+        reason = (
+            f"{profile['crop']} fits current climate-soil profile with strongest alignment in "
+            f"{', '.join(matched_conditions[:3])}."
+        )
+
+        ranked.append(
+            {
+                "crop": profile["crop"],
+                "suitability_score": max(0, min(100, suitability_score)),
+                "reason": reason,
+                "matched_conditions": matched_conditions[:5],
+            }
+        )
+
+    ranked.sort(key=lambda x: x["suitability_score"], reverse=True)
+    return ranked
 
 
 def _clean_response_text(text):
@@ -387,6 +727,19 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
 
+
+class CropRecommendationRequest(BaseModel):
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+    soil_ph: Optional[float] = None
+    soil_moisture: Optional[float] = None
+    nitrogen: Optional[Union[str, float, int]] = None
+    phosphorus: Optional[Union[str, float, int]] = None
+    potassium: Optional[Union[str, float, int]] = None
+    rainfall: Optional[float] = None
+    location: Optional[str] = None
+    season: Optional[str] = None
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
     session_id = request.session_id
@@ -518,6 +871,36 @@ async def analyze_plant(file: UploadFile = File(...)):
     return {**result, "model_used": used_model, "filename": file.filename}
 
 
+@app.post("/recommend-crops")
+async def recommend_crops(payload: CropRecommendationRequest):
+    conditions, warnings, improvement_suggestions = _derive_conditions(payload)
+    ranked = _rank_crops(conditions)
+
+    top_recommended = ranked[:3]
+    alternatives_pool = ranked[3:5]
+    alternatives = [
+        {
+            "crop": item["crop"],
+            "reason": (
+                f"Alternative option with suitability score {item['suitability_score']} under current/seasonal assumptions."
+            ),
+        }
+        for item in alternatives_pool
+    ]
+
+    if not top_recommended or top_recommended[0]["suitability_score"] < 55:
+        warnings.append("Current conditions are weak for major crops; corrective action is recommended before sowing.")
+        if not improvement_suggestions:
+            improvement_suggestions.append("Conduct soil test calibration and optimize irrigation-fertilizer schedule before planting.")
+
+    return {
+        "recommended_crops": top_recommended,
+        "alternative_crops": alternatives,
+        "warnings": warnings,
+        "improvement_suggestions": improvement_suggestions,
+    }
+
+
 # Serve chatbot API only (no frontend)
 @app.get("/")
 async def root():
@@ -526,6 +909,7 @@ async def root():
         "endpoints": {
             "POST /chat": "Chat with the farming assistant (text)",
             "POST /analyze-plant": "Upload a plant/crop image for analysis",
+            "POST /recommend-crops": "Recommend crops using sensor and seasonal conditions",
             "GET /health": "Health check and model status"
         }
     }
