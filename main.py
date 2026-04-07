@@ -219,6 +219,39 @@ CROP_PROFILES = [
 
 NPK_LEVELS = ["low", "medium", "high"]
 
+SEASON_ALERT_RANGES = {
+    "kharif": {
+        "temperature": (20.0, 35.0),
+        "humidity": (55.0, 90.0),
+    },
+    "rabi": {
+        "temperature": (8.0, 26.0),
+        "humidity": (35.0, 70.0),
+    },
+    "zaid": {
+        "temperature": (24.0, 39.0),
+        "humidity": (30.0, 65.0),
+    },
+    "annual": {
+        "temperature": (15.0, 35.0),
+        "humidity": (35.0, 80.0),
+    },
+}
+
+PH_SAFE_RANGE = (5.8, 7.5)
+SOIL_MOISTURE_SAFE_RANGE = (30.0, 75.0)
+
+CONDITION_SUGGESTIONS = {
+    "temperature:high": "High temperature: increase irrigation frequency, use mulching, and avoid mid-day field operations.",
+    "temperature:low": "Low temperature: delay sowing of heat-loving crops and use protective covering where possible.",
+    "humidity:high": "High humidity: improve ventilation and spacing to reduce disease pressure.",
+    "humidity:low": "Low humidity: reduce evapotranspiration losses using mulching and timely irrigation.",
+    "soil_ph:high": "Soil pH is high: apply acidifying amendments and add organic matter to improve nutrient availability.",
+    "soil_ph:low": "Soil pH is low: apply agricultural lime based on soil test recommendations.",
+    "soil_moisture:high": "Soil moisture is high: improve drainage to prevent root rot and oxygen stress.",
+    "soil_moisture:low": "Soil moisture is low: increase irrigation and mulching to improve moisture retention.",
+}
+
 
 def _normalize_text(value: Optional[str]) -> Optional[str]:
     if value is None:
@@ -297,6 +330,36 @@ def _season_key(season: Optional[str]) -> str:
     if "zaid" in normalized or "summer" in normalized:
         return "zaid"
     return "annual"
+
+
+def _build_condition_alert(parameter: str, value: float, low: float, high: float, unit: str) -> Optional[dict]:
+    if low <= value <= high:
+        return None
+
+    span = max(high - low, 1.0)
+    if value < low:
+        direction = "low"
+        diff = low - value
+    else:
+        direction = "high"
+        diff = value - high
+
+    severity = "critical" if (diff / span) >= 0.4 else "warning"
+    value_text = f"{value:.1f}{unit}" if unit else f"{value:.1f}"
+    low_text = f"{low:.1f}{unit}" if unit else f"{low:.1f}"
+    high_text = f"{high:.1f}{unit}" if unit else f"{high:.1f}"
+
+    return {
+        "parameter": parameter,
+        "severity": severity,
+        "direction": direction,
+        "value": value_text,
+        "recommended_range": f"{low_text} - {high_text}",
+        "message": (
+            f"{parameter.replace('_', ' ').title()} is {direction} ({value_text}). "
+            f"Recommended range is {low_text} to {high_text}."
+        ),
+    }
 
 
 def _derive_conditions(payload: "CropRecommendationRequest") -> tuple[dict, list[str], list[str]]:
@@ -740,6 +803,15 @@ class CropRecommendationRequest(BaseModel):
     location: Optional[str] = None
     season: Optional[str] = None
 
+
+class ConditionAlertRequest(BaseModel):
+    temperature: float
+    humidity: float
+    soil_ph: float
+    soil_moisture: Optional[float] = None
+    season: Optional[str] = None
+    location: Optional[str] = None
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
     session_id = request.session_id
@@ -901,6 +973,52 @@ async def recommend_crops(payload: CropRecommendationRequest):
     }
 
 
+@app.post("/condition-alert")
+async def condition_alert(payload: ConditionAlertRequest):
+    season_key = _season_key(payload.season)
+    season_ranges = SEASON_ALERT_RANGES.get(season_key, SEASON_ALERT_RANGES["annual"])
+
+    checks = [
+        ("temperature", payload.temperature, season_ranges["temperature"][0], season_ranges["temperature"][1], "C"),
+        ("humidity", payload.humidity, season_ranges["humidity"][0], season_ranges["humidity"][1], "%"),
+        ("soil_ph", payload.soil_ph, PH_SAFE_RANGE[0], PH_SAFE_RANGE[1], ""),
+    ]
+
+    if payload.soil_moisture is not None:
+        checks.append(("soil_moisture", payload.soil_moisture, SOIL_MOISTURE_SAFE_RANGE[0], SOIL_MOISTURE_SAFE_RANGE[1], "%"))
+
+    alerts = []
+    suggestions = []
+
+    for parameter, value, low, high, unit in checks:
+        alert = _build_condition_alert(parameter, value, low, high, unit)
+        if alert is None:
+            continue
+        alerts.append(alert)
+        suggestions.append(CONDITION_SUGGESTIONS.get(f"{parameter}:{alert['direction']}", "Review agronomic management and sensor calibration."))
+
+    suggestions = list(dict.fromkeys(suggestions))
+
+    if not alerts:
+        overall_status = "good"
+        suggestions = ["No corrective action needed. Continue routine monitoring."]
+    elif any(item["severity"] == "critical" for item in alerts):
+        overall_status = "critical"
+    else:
+        overall_status = "warning"
+
+    return {
+        "overall_status": overall_status,
+        "all_good": len(alerts) == 0,
+        "context": {
+            "season": payload.season or season_key,
+            "location": payload.location or "Jammu and Kashmir, India",
+        },
+        "alerts": alerts,
+        "improvement_suggestions": suggestions,
+    }
+
+
 # Serve chatbot API only (no frontend)
 @app.get("/")
 async def root():
@@ -910,6 +1028,7 @@ async def root():
             "POST /chat": "Chat with the farming assistant (text)",
             "POST /analyze-plant": "Upload a plant/crop image for analysis",
             "POST /recommend-crops": "Recommend crops using sensor and seasonal conditions",
+            "POST /condition-alert": "Alert if sensor conditions are healthy or risky",
             "GET /health": "Health check and model status"
         }
     }
